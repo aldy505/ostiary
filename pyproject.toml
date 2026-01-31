@@ -1,0 +1,18 @@
+[project]
+name = "ostiary"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.128.0",
+    "geoip2>=5.2.0",
+    "sentry-sdk>=2.51.0",
+    "tinyflux>=1.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.14",
+    "ty>=0.0.14",
+]
