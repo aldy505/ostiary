@@ -63,7 +63,7 @@ app = FastAPI(lifespan=lifespan)
 
 def cleanup():
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    db.delete(TimeQuery() < cutoff_date)
+    db.remove(TimeQuery() < cutoff_date)
 
 
 class CommonHeaders(BaseModel):
@@ -85,7 +85,8 @@ def read_root(
         try:
             country_response = geoip_country_db.country(headers.x_forwarded_for)
             country = country_response.country.name
-        except:
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
             country = None
 
     if geoip_asn_db is not None and headers.x_forwarded_for:
@@ -93,7 +94,8 @@ def read_root(
             asn_response = geoip_asn_db.asn(headers.x_forwarded_for)
             asn_org = asn_response.autonomous_system_organization
             asn_number = asn_response.autonomous_system_number
-        except:
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
             asn_org = None
             asn_number = None
 
