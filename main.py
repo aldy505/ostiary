@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from typing import Annotated, Union
 
-from fastapi import FastAPI, Header
+from fastapi import BackgroundTasks, FastAPI, Header
 from pydantic import BaseModel
 from tinyflux import Point, TinyFlux
 from tinyflux.queries import TagQuery, TimeQuery
@@ -32,6 +32,8 @@ sentry_sdk.init(
     enable_logs=True,
 )
 
+retention_days = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
+
 geoip_country_db_path = os.environ.get("GEOIP_COUNTRY_DB_PATH")
 geoip_asn_db_path = os.environ.get("GEOIP_ASN_DB_PATH")
 geoip_country_db: geoip2.database.Reader | None = None
@@ -43,18 +45,25 @@ if geoip_country_db_path:
 if geoip_asn_db_path:
     geoip_asn_db = geoip2.database.Reader(geoip_asn_db_path)
 
+db = TinyFlux(os.environ.get("DATA_PATH", "requests.csv"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
+    db.close()
     if geoip_country_db is not None:
         geoip_country_db.close()
     if geoip_asn_db is not None:
         geoip_asn_db.close()
 
 
-db = TinyFlux(os.environ.get("DATA_PATH", "requests.csv"))
 app = FastAPI(lifespan=lifespan)
+
+
+def cleanup():
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    db.delete(TimeQuery() < cutoff_date)
 
 
 class CommonHeaders(BaseModel):
@@ -70,12 +79,13 @@ class CommonHeaders(BaseModel):
 @app.get("/api/v0/request")
 def read_root(
     headers: Annotated[CommonHeaders, Header()],
+    background_tasks: BackgroundTasks,
 ):
     if geoip_country_db is not None and headers.x_forwarded_for:
         try:
             country_response = geoip_country_db.country(headers.x_forwarded_for)
             country = country_response.country.name
-        except geoip2.errors.AddressNotFoundError:
+        except:
             country = None
 
     if geoip_asn_db is not None and headers.x_forwarded_for:
@@ -83,7 +93,7 @@ def read_root(
             asn_response = geoip_asn_db.asn(headers.x_forwarded_for)
             asn_org = asn_response.autonomous_system_organization
             asn_number = asn_response.autonomous_system_number
-        except geoip2.errors.AddressNotFoundError:
+        except:
             asn_org = None
             asn_number = None
 
@@ -113,6 +123,10 @@ def read_root(
         sentry_sdk.capture_exception(os_error)
     except TypeError as type_error:
         sentry_sdk.capture_exception(type_error)
+
+    # Execute cleanup in the background randomly to avoid slowing down requests.
+    if os.urandom(1)[0] < 5:  # ~2% chance
+        background_tasks.add_task(cleanup)
 
     return "OK"
 

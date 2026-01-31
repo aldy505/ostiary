@@ -38,12 +38,16 @@ Query logged requests with optional filters.
 [
   {
     "ip_address": "127.0.0.1",
+    "hits": 1,
     "points": [
       {
         "time": "2026-01-31T02:15:50.058539+00:00",
         "user_agent": "Mozilla/5.0...",
         "host": "example.com",
-        "path": "/api/endpoint"
+        "path": "/api/endpoint",
+        "country": "United States",
+        "asn_org": "Microsoft Corporation",
+        "asn_number": "AS..."
       }
     ]
   }
@@ -57,7 +61,7 @@ Query logged requests with optional filters.
 ```yaml
 services:
   ostiary:
-    image: ostiary:latest
+    image: ghcr.io/aldy505/ostiary:latest
     networks:
       - public-web
     environment:
