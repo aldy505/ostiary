@@ -3,7 +3,7 @@ FROM python:3.13.11-alpine3.23@sha256:2f607129b1b915a949320bf0c4831a73d1c1b1be66
 WORKDIR /app
 
 # Install uv for faster dependency installation
-COPY --from=ghcr.io/astral-sh/uv:0.9.28-python3.13-alpine3.23 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.9.28-python3.13-alpine3.23 /usr/local/bin/uv /usr/local/bin/uv
 
 RUN apk add --no-cache curl ca-certificates
 
