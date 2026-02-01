@@ -343,7 +343,7 @@ def generate_chart(
         new Chart(ctx, {{
             type: "line",
             data: {{
-              labels: [{json.dumps(labels)}],
+              labels: {json.dumps(labels)},
               datasets: {json.dumps([d.model_dump(exclude_none=True) for d in datasets])}
             }}
         }});
