@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from typing import Annotated, Union
 
 from fastapi import BackgroundTasks, FastAPI, Header
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from tinyflux import Point, TinyFlux
 from tinyflux.queries import TagQuery, TimeQuery
@@ -137,20 +139,19 @@ def read_root(
 def read_item(
     ip_address: Union[str, None] = None,
     host: Union[str, None] = None,
-    method: Union[str, None] = None,
     start_date: Union[str, datetime, None] = None,
     end_date: Union[str, datetime, None] = None,
 ):
     # if start_date and end_date are provided, convert them to datetime objects
     if start_date and isinstance(start_date, str):
         start_date = datetime.fromisoformat(start_date)
-    elif start_date is None:
+    else:
         start_date = datetime.now(timezone.utc) - timedelta(
             days=1
         )  # default to last 24 hours
     if end_date and isinstance(end_date, str):
         end_date = datetime.fromisoformat(end_date)
-    elif end_date is None:
+    else:
         end_date = datetime.now(timezone.utc)  # default to now
 
     if ip_address is None and host is None:
@@ -199,3 +200,154 @@ def read_item(
         {"ip_address": ip, "hits": len(points_list), "points": points_list}
         for ip, points_list in grouped.items()
     ]
+
+
+class ChartDataset(BaseModel):
+    label: str
+    data: list[int]
+    borderColor: str | None
+    backgroundColor: str | None
+    fill: bool | None = False
+    tension: float | None = 0.1
+
+
+@app.get("/chart", response_class=HTMLResponse)
+def generate_chart(
+    ip_address: Union[str, None] = None,
+    host: Union[str, None] = None,
+    start_date: Union[str, datetime, None] = None,
+    end_date: Union[str, datetime, None] = None,
+):
+    # if start_date and end_date are provided, convert them to datetime objects
+    if start_date and isinstance(start_date, str):
+        start_date = datetime.fromisoformat(start_date)
+    else:
+        start_date = datetime.now(timezone.utc) - timedelta(
+            days=1
+        )  # default to last 24 hours
+    if end_date and isinstance(end_date, str):
+        end_date = datetime.fromisoformat(end_date)
+    else:
+        end_date = datetime.now(timezone.utc)  # default to now
+
+    if ip_address is None and host is None:
+        points = db.search((TimeQuery() >= start_date) & (TimeQuery() <= end_date))
+    elif ip_address is None and host is not None:
+        points = db.search(
+            (TagQuery().forwarded_host == host)
+            & (TimeQuery() >= start_date)
+            & (TimeQuery() <= end_date)
+        )
+    elif ip_address is not None and host is None:
+        points = db.search(
+            (TagQuery().ip_address == ip_address)
+            & (TimeQuery() >= start_date)
+            & (TimeQuery() <= end_date)
+        )
+    else:
+        points = db.search(
+            (TagQuery().ip_address == ip_address)
+            & (TagQuery().forwarded_host == host)
+            & (TimeQuery() >= start_date)
+            & (TimeQuery() <= end_date)
+        )
+
+    # Group points by IP address
+    grouped: dict[str, list[dict[str, Union[str, None]]]] = {}
+    for point in points:
+        ip = point.tags.get("ip_address", "unknown")
+        if ip not in grouped:
+            grouped[ip] = []
+
+        grouped[ip].append(
+            {
+                "time": point.time.isoformat(),
+                "user_agent": point.tags.get("user_agent", "unknown"),
+                "host": point.tags.get("forwarded_host", "unknown"),
+                "path": point.tags.get("forwarded_uri", "unknown"),
+                "country": point.tags.get("geoip_country"),
+                "asn_org": point.tags.get("geoip_asn_org"),
+                "asn_number": point.tags.get("geoip_asn_number"),
+            }
+        )
+
+    # Generate labels with adaptive granularity based on the requested range.
+    # Use hourly intervals for ranges up to 7 days; otherwise, use daily intervals
+    range_delta = end_date - start_date
+    if range_delta <= timedelta(days=7):
+        # Hourly granularity
+        label_format = "%Y-%m-%d %H:%M"
+
+        def _normalize_bucket(dt: datetime) -> datetime:
+            return dt.replace(minute=0, second=0, microsecond=0)
+
+        step = timedelta(hours=1)
+    else:
+        # Daily granularity for longer ranges to avoid excessive labels
+        label_format = "%Y-%m-%d"
+
+        def _normalize_bucket(dt: datetime) -> datetime:
+            return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        step = timedelta(days=1)
+
+    labels = []
+    current = _normalize_bucket(start_date)
+    while current <= end_date:
+        labels.append(current.strftime(label_format))
+        current += step
+
+    # Each IP address is a dataset
+    datasets: list[ChartDataset] = []
+    for ip, points_list in grouped.items():
+        # Count hits per label
+        hits_per_bucket: dict[str, int] = {label: 0 for label in labels}
+        for point in points_list:
+            t = point["time"]
+            if not t:
+                continue
+
+            point_time = datetime.fromisoformat(t)
+            bucket_time = _normalize_bucket(point_time)
+            bucket_label = bucket_time.strftime(label_format)
+            if bucket_label in hits_per_bucket:
+                hits_per_bucket[bucket_label] += 1
+
+        data = [hits_per_bucket[label] for label in labels]
+
+        datasets.append(
+            ChartDataset(
+                label=ip,
+                data=data,
+                borderColor=None,
+                backgroundColor=None,
+            )
+        )
+
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ostiary Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" integrity="sha256-SERKgtTty1vsDxll+qzd4Y2cF9swY9BCq62i9wXJ9Uo=" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div style="width: auto; max-width: 100vw; margin: auto;">
+    <canvas id="requestChart"></canvas>
+    </div>
+    <script>
+        const ctx = document.getElementById('requestChart');
+
+        new Chart(ctx, {{
+            type: "line",
+            data: {{
+              labels: {json.dumps(labels)},
+              datasets: {json.dumps([d.model_dump(exclude_none=True) for d in datasets])}
+            }}
+        }});
+    </script>
+</body>
+</html>
+    """
