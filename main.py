@@ -145,13 +145,13 @@ def read_item(
     # if start_date and end_date are provided, convert them to datetime objects
     if start_date and isinstance(start_date, str):
         start_date = datetime.fromisoformat(start_date)
-    elif start_date is None:
+    else:
         start_date = datetime.now(timezone.utc) - timedelta(
             days=1
         )  # default to last 24 hours
     if end_date and isinstance(end_date, str):
         end_date = datetime.fromisoformat(end_date)
-    elif end_date is None:
+    else:
         end_date = datetime.now(timezone.utc)  # default to now
 
     if ip_address is None and host is None:
@@ -253,7 +253,7 @@ def generate_chart(
         )
 
     # Group points by IP address
-    grouped: dict[str, list[dict[str, str]]] = {}
+    grouped: dict[str, list[dict[str, Union[str, None]]]] = {}
     for point in points:
         ip = point.tags.get("ip_address", "unknown")
         if ip not in grouped:
@@ -271,29 +271,49 @@ def generate_chart(
             }
         )
 
-    # Generate labels. Use hourly intervals between start_date and end_date
-    labels = []
-    current = start_date.replace(minute=0, second=0, microsecond=0)
-    while current <= end_date:
-        labels.append(current.strftime("%Y-%m-%d %H:%M"))
-        current += timedelta(hours=1)
+    # Generate labels with adaptive granularity based on the requested range.
+    # Use hourly intervals for ranges up to 7 days; otherwise, use daily intervals
+    range_delta = end_date - start_date
+    if range_delta <= timedelta(days=7):
+        # Hourly granularity
+        label_format = "%Y-%m-%d %H:%M"
 
-    labels_str = ", ".join(f'"{label}"' for label in labels)
+        def _normalize_bucket(dt: datetime) -> datetime:
+            return dt.replace(minute=0, second=0, microsecond=0)
+
+        step = timedelta(hours=1)
+    else:
+        # Daily granularity for longer ranges to avoid excessive labels
+        label_format = "%Y-%m-%d"
+
+        def _normalize_bucket(dt: datetime) -> datetime:
+            return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        step = timedelta(days=1)
+
+    labels = []
+    current = _normalize_bucket(start_date)
+    while current <= end_date:
+        labels.append(current.strftime(label_format))
+        current += step
 
     # Each IP address is a dataset
     datasets: list[ChartDataset] = []
     for ip, points_list in grouped.items():
-        # Count hits per hour
-        hits_per_hour: dict[str, int] = {label: 0 for label in labels}
+        # Count hits per label
+        hits_per_bucket: dict[str, int] = {label: 0 for label in labels}
         for point in points_list:
-            point_time = datetime.fromisoformat(point["time"])
-            hour_label = point_time.replace(minute=0, second=0, microsecond=0).strftime(
-                "%Y-%m-%d %H:%M"
-            )
-            if hour_label in hits_per_hour:
-                hits_per_hour[hour_label] += 1
+            t = point["time"]
+            if not t:
+                continue
 
-        data = [hits_per_hour[label] for label in labels]
+            point_time = datetime.fromisoformat(t)
+            bucket_time = _normalize_bucket(point_time)
+            bucket_label = bucket_time.strftime(label_format)
+            if bucket_label in hits_per_bucket:
+                hits_per_bucket[bucket_label] += 1
+
+        data = [hits_per_bucket[label] for label in labels]
 
         datasets.append(
             ChartDataset(
@@ -323,8 +343,8 @@ def generate_chart(
         new Chart(ctx, {{
             type: "line",
             data: {{
-              labels: [{labels_str}],
-              datasets: {json.dumps(datasets, default=lambda o: o.__dict__)}
+              labels: [{json.dumps(labels)}],
+              datasets: {json.dumps([d.model_dump(exclude_none=True) for d in datasets])}
             }}
         }});
     </script>
